@@ -1,0 +1,9 @@
+{
+    "total_files_seen": 29896,
+    "files_unsupported": 6003,
+    "files_processed": 3732,
+    "skipped_clone_fail": 7,
+    "skipped_too_many_files": 47,
+    "lizard_timeouts": 0,
+    "fail_pr_fetch": 14
+}
