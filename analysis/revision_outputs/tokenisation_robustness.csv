@@ -1,5 +1,0 @@
-condition,n_agent,n_developer,entropy_r_rb,entropy_p,entropy_sig,entropy_effect,overlap_r_rb,overlap_p,overlap_sig,overlap_effect,mtld_r_rb,mtld_p,mtld_sig,mtld_effect
-original,3744,2177,0.12655692378361194,4.0667105227526415e-16,True,small,0.0,1.0,False,negligible,0.09635229597395167,2.7944408712251583e-06,True,negligible
-identifier-split,3744,2177,0.13080634898190047,4.156970661900393e-17,True,small,0.0,1.0,False,negligible,0.07505030181086514,0.0002554973971853154,True,negligible
-stopword-filtered,3744,2177,0.06969903216719298,7.483988604564137e-06,True,negligible,0.0,1.0,False,negligible,0.06728263799454914,0.002976260745006074,True,negligible
-≥15-token subsample,1457,934,0.2861361896125769,3.0352684237795886e-32,True,small,0.0,1.0,False,negligible,0.1597420119073688,4.126577497184648e-11,True,small
