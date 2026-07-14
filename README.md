@@ -4,28 +4,42 @@ This repository contains a replication package for a paper that studies the natu
 
 ## Project Overview
 
-- `dataset/` contains dataset creation scripts, repository cloning helpers, and sample data for building the evaluation corpus.
-- `analysis/` contains notebooks and analysis code for research questions related to documentation naturalness, readability, sentiment, and statistical comparisons.
+- `dataset/` contains dataset creation scripts, repository cloning helpers, and the CSV/Parquet data used to build the evaluation corpus.
+- `analysis/` contains one folder per research question (`rq1`–`rq5`), each with the notebook(s) used to produce that RQ's statistics and figures.
 
 ## Key Components
 
 ### Dataset Construction
 
-The `dataset/buildDataset/build.py` script is the primary dataset builder.
-It collects data from cloned repositories, extracts documentation and code artifacts, and computes metrics for analysis.
+`dataset/buildDataset/` contains the scripts/notebooks used to mine and assemble the corpus:
 
-Important dataset files include:
+- `build.py` — primary miner. Clones repositories, extracts documentation/code artifacts, and computes metrics. Currently configured to write `agent_final_dataset_subset_b.csv` and `mining_stats_agent_subset_b.json` (the human-side outputs, `dev_final_dataset_subset_b.csv` / `mining_stats_dev_subset_b.json`, are produced by the same script via the commented-out block).
+- `fetch_new_agent_prs.ipynb` — searches GitHub for recently merged PRs authored by AI agents (Claude Code, Copilot, Cursor, Devin, OpenAI Codex) and builds `new_agent_dataset.csv`.
+- `build_human_pr_list.ipynb` — mines the pre-2021 human PR baseline (`human_baseline_2021.parquet`) used as the human comparison group.
+- `correct.ipynb` — post-processes the mined data (re-tokenizes/cleans comments, recomputes readability metrics) to produce the corrected dataset consumed by the analysis notebooks.
 
-- `dataset/data/agent_final_dataset_subset_b.csv`
-- `dataset/data/dev_final_dataset_subset_b.csv`
-- `dataset/data/updated_dataset_2_metrics_f.csv`
-- `dataset/data/updated_dataset_metrics.csv`
+The dataset creation process requires GitHub API tokens configured in a `.env` file (`GITHUB_TOKEN_1`, `GITHUB_TOKEN_2`, `GITHUB_TOKEN_3`).
 
-The dataset creation process requires GitHub API tokens configured in a `.env` file.
+Key files in `dataset/data/`:
 
+- `final_dataset_new_corrected.csv` — the primary, cleaned dataset used by all `analysis/rq*` notebooks.
+- `final_dataset_new.csv` — the merged dataset prior to correction (input to `correct.ipynb`).
+- `updated_dataset_metrics.csv` — supplementary metrics joined in for RQ1.
+- `agent_final_dataset_subset_b.csv` / `dev_final_dataset_subset_b.csv` — raw per-agent / per-human mining output from `build.py`, with matching `mining_stats_*_subset_b.json` run logs.
+- `new_agent_dataset.csv`, `new_agent_pr_list.parquet`, `human_baseline_2021.parquet`, `all_pull_request.parquet`, `all_pull_request_ballanced.parquet` — intermediate PR pools used while assembling/extending the corpus.
+
+### Analysis
+
+Each RQ folder under `analysis/` holds an `a.ipynb` notebook that loads `final_dataset_new_corrected.csv` (or `final_dataset_new.csv`) and produces that question's statistics/plots:
+
+- `rq1/` — per-language comparison of entropy, code overlap, and token count.
+- `rq2/` — documented-vs-undocumented and human-vs-agent comparisons on code quality metrics (cyclomatic complexity, SLOC, static analysis findings).
+- `rq3/` — interface/complexity ranking and quantile regression.
+- `rq4/` — repository activity and commit turnover comparisons.
+- `rq5/` — sentiment and readability analysis of comments, plus naturalness modeling: `n-gram.ipynb` (n-gram cross-entropy) and `rq5_robustness.ipynb` (robustness checks, outputs in `revision_outputs/`).
 
 ## Usage
 
-- Use `dataset/buildDataset/build.py` to generate or refresh dataset CSV files from cloned repositories.
-- Open and run analysis notebooks under `analysis/` to reproduce experiments and visualizations.
+- Run the notebooks/scripts in `dataset/buildDataset/` (in the order above) to mine or refresh the source data, then run `correct.ipynb` to produce the corrected dataset used downstream.
+- Open and run the notebooks under `analysis/rq1`–`analysis/rq5` to reproduce each research question's experiments and visualizations.
 
