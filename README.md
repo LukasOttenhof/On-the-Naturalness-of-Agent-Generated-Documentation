@@ -30,7 +30,7 @@ Key files in `dataset/data/`:
 
 ### Analysis
 
-Each RQ folder under `analysis/` holds an `a.ipynb` notebook that loads `final_dataset_new_corrected.csv` (or `final_dataset_new.csv`) and produces that question's statistics/plots:
+Each RQ folder under `analysis/` holds an `a.ipynb` notebook that loads `final_dataset_new_corrected.csv`and produces that question's statistics/plots:
 
 - `rq1/` — per-language comparison of entropy, code overlap, and token count.
 - `rq2/` — documented-vs-undocumented and human-vs-agent comparisons on code complexity metrics (cyclomatic complexity, SLOC, static analysis findings).
