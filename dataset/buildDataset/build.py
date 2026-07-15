@@ -844,7 +844,9 @@ if __name__ == "__main__":
   
  
     miner = AiDevMiner()
-    
+    # WE MINE AGENT PRS, THEN WE MINE DEV PRS. DEV PRS ARE SAVED IN "dev_final_dataset_subset_b.csv"
+    # WHILE AGENT GO TO "agent_final_dataset_subset_b.csv"
+
     # output_path = OUTPUT_DIR / "aidev_final_dataset.csv"
     # stats_path = OUTPUT_DIR / "mining_stats_human.json"
     # output_path = OUTPUT_DIR / "dev_final_dataset_subset_b.csv"
