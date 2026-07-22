@@ -25,7 +25,7 @@ Key files in `dataset/data/`:
 - `final_dataset_new_corrected.csv` — the primary, cleaned dataset used by notebooks.
 - `final_dataset_new.csv` — the dataset prior to clean (input to `combine.ipynb`).
 - `agent_final_dataset_subset_b.csv` / `dev_final_dataset_subset_b.csv` — raw per-agent / per-human mining output from `build.py`.
-- `new_agent_dataset.csv`, `new_agent_pr_list.parquet`, `human_baseline_2021.parquet`, `all_pull_request.parquet`, `all_pull_request_ballanced.parquet` — intermediate PR pools used while building the corpus.
+- `new_agent_dataset.csv`, `new_agent_pr_list.parquet`, `human_baseline_2021.parquet`, `all_pull_request.parquet`, `all_pull_request_ballanced.parquet` — intermediate PR pools used while building the corpus. 200 prs for each agent.
 - `all_pull_request.parquet` — aidev dataset, `all_pull_request_ballanced.parquet`, is the subset or prs made by us
 ### Analysis
 
