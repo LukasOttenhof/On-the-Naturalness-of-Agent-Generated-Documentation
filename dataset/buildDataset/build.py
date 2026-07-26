@@ -226,31 +226,52 @@ def find_documentation_header(lines, start_line):
     
     return doc_start
 
-def extract_documentation(lines, start, end):
+PYTHON_EXTENSIONS = {'.py'}
+
+
+def extract_documentation(lines, start, end, file_extension):
     """
     Extracts all documentation (header + internal) from the given range.
     Uses regex to pull comments out of code lines (inline comments).
     """
+
     # 1. Get the raw block of text for the function range
     # start and end are 1-indexed from lizard/find_documentation_header
     raw_block = "\n".join(lines[start-1:end])
-    
+
     extracted_docs = []
 
     # 2. Extract Multi-line C-style /* ... */ blocks
     c_blocks = re.findall(r'/\*.*?\*/', raw_block, flags=re.DOTALL)
     extracted_docs.extend([b.strip() for b in c_blocks])
-    
-    # 3. Process line-by-line for #, //, and Python triple quotes
-    for line in raw_block.splitlines():
+
+    # 3. Extract Python triple-quoted blocks used as documentation: the
+    # docstring itself, plus any other standalone triple-quoted string used
+    # as an ad-hoc comment (Python has no real block-comment syntax, so this
+    # is a common substitute -- same idea as the /* */ regex above grabbing
+    # C-style blocks anywhere, not just at the top). "Standalone" means the
+    # triple-quote is the first non-whitespace token on its line; this
+    # excludes assignments like `x = """some string"""`, which are ordinary
+    # string literals, not documentation. Restricted to Python files: Java
+    # text blocks and Kotlin raw strings also use \"\"\" for ordinary string
+    # literals, not documentation.
+    py_blocks = []
+    if file_extension and file_extension.lower() in PYTHON_EXTENSIONS:
+        py_blocks = re.findall(
+            r'^[ \t]*("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')', raw_block, flags=re.MULTILINE
+        )
+        extracted_docs.extend([b.strip() for b in py_blocks])
+
+    # Remove already-captured blocks so the remaining line-by-line scan for
+    # #/// comments doesn't re-match text that lives inside a docstring or
+    # C-style comment.
+    remaining_block = raw_block
+    for b in c_blocks + py_blocks:
+        remaining_block = remaining_block.replace(b, "", 1)
+
+    # 4. Process remaining lines for # and // (single-line) comments
+    for line in remaining_block.splitlines():
         line = line.strip()
-        
-        # Capture Python docstrings (multiline or single line)
-        # Regex finds """text""" or '''text'''
-        py_doc = re.findall(r'(""".*?"""|' + "'''.*?'''" + r'|"""[\s\S]*?"""|' + "'''[\\s\\S]*?''')", line)
-        if py_doc:
-            extracted_docs.extend(py_doc)
-            continue # Move to next line if this was just a docstring line
 
         # Capture # or // comments (including inline ones)
         # Look for the symbol and grab everything after it
@@ -348,7 +369,8 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
     month_shas = get_time_based_shas(local_repo, merged_at, window_days=14)
     number_shas = get_target_shas(local_repo, merge_sha)
     shas = [number_shas[0], number_shas[1], number_shas[2], month_shas['1_month_mark'], month_shas['3_month_mark']]
-
+    
+    file_extension = Path(rel_path).suffix.lower()
     res = []
     pr_tokens = set(tokenize(pr_doc_text))
     
@@ -386,10 +408,7 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
 
             try:     
                 cp = subprocess.run([sys.executable, "-m", "lizard", str(tmp_path)], capture_output=True, text=True, timeout=60)
-                # if cp.returncode != 0:
-                #     print(f"Lizard execution error for {sha}: {cp.stderr}")
-                #     res.append(None)
-                #     continue
+    
 
                 metrics = parse_detailed_lizard(cp.stdout)
                 
@@ -420,7 +439,7 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
                     f_end = f_start + func["length"] - 1
                     
                     adj_start = find_documentation_header(lines, f_start)
-                    doc_list, _ = extract_documentation(lines, adj_start, f_end)
+                    doc_list, _ = extract_documentation(lines, adj_start, f_end, file_extension)
                     future_doc_text = " ".join(doc_list)
                     
                     future_tokens = set(tokenize(future_doc_text))
@@ -746,9 +765,12 @@ class AiDevMiner:
                         if not function_line_range.issubset(changed_lines):
                             continue
 
+                        
                         start_line = find_documentation_header(lines, start_line)
 
-                        doc_list, doc_lines = extract_documentation(lines, start_line, end_line)
+                        doc_list, doc_lines = extract_documentation(lines, start_line, end_line, file_extension)
+
+
                         doc_text = " ".join(doc_list)
 
                         raw_code = "\n".join(lines[start_line-1:end_line])
