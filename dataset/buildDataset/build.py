@@ -29,9 +29,9 @@ import numpy as np
 import shutil
 os.environ["PYTHONUTF8"] = "1"
 # --- Configuration ---
-REPO_BASE_DIR = Path("./buildDataset/cloned_repos")
+REPO_BASE_DIR = Path(__file__).resolve().parent / "cloned_repos"
 OUTPUT_DIR = Path("./dataset/data")
-REPO_BASE_DIR.mkdir(exist_ok=True)
+REPO_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 SUPPORTED_EXTENSIONS = {
     '.cs',                          # C#
