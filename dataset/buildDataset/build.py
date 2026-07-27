@@ -943,8 +943,8 @@ if __name__ == "__main__":
     # stats_path = OUTPUT_DIR / "mining_stats_human.json"
     # output_path = OUTPUT_DIR / "dev_final_dataset_subset.csv"
     # stats_path = OUTPUT_DIR / "mining_stats_dev_subset.json"
-    output_path = OUTPUT_DIR / "agent_dataset_subset.csv"
-    stats_path = OUTPUT_DIR / "stats_agent_subset.json"
+    output_path = OUTPUT_DIR / "agent_dataset_subset_data.csv"
+    stats_path = OUTPUT_DIR / "stats_agent_subset_data.json"
     if stats_path.exists():
         with open(stats_path, 'r') as sj:
             final_stats = Counter(json.load(sj))
