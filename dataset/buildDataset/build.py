@@ -134,27 +134,57 @@ def doc_code_overlap(doc_text, code_text): # get percent of tokens that overlap 
     overlap = doc_tokens.intersection(code_tokens)
     return len(overlap) / len(doc_tokens)
 
-def strip_comments(text):
-    # 1. Remove multi-line comments /* ... */
-    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
-    
-    # 2. Split into lines to handle inline comments
-    lines = text.splitlines()
-    clean_lines = []
-    
-    for line in lines:
-        # Remove // or # style comments
-        # This regex looks for // or # and grabs everything until the end of the line
-        line = re.sub(r'(//|#).*$', '', line)
-        
-        # Remove triple quote docstrings if they are on a single line 
-        # (e.g., """ doc """)
-        line = re.sub(r'(""".*?"""|' + "'''.*?''')", '', line)
-        
-        # Only keep the line if it isn't empty after stripping whitespace
-        if line.strip():
-            clean_lines.append(line.rstrip())
-            
+def strip_comments(text, file_extension=None):
+    """
+    Returns the source with all comments/docstrings removed, using the same
+    tree-sitter parse (and the same comment/docstring node rules) as
+    extract_documentation, instead of the old regex approach. The old regex
+    version had the same failure modes we found in the pre-fix
+    extract_documentation: a multi-line docstring was never removed (only
+    same-line \"\"\"...\"\"\" was), any line starting with '#' was blindly
+    treated as a comment (wrongly deleting C-style preprocessor directives
+    or Swift '#' macro calls), and a '//' inside a string literal (e.g. a
+    URL) truncated the rest of that line instead of being left alone.
+    """
+    ext = file_extension.lower() if file_extension else ""
+    parser = _get_ts_parser(ext)
+    if parser is None:
+        return text
+
+    parse_text = "<?php\n" + text if ext == ".php" else text
+    parse_bytes = parse_text.encode("utf-8")
+    tree = parser.parse(parse_bytes)
+
+    remove_ranges = []
+
+    def visit(node):
+        if "comment" in node.type:
+            remove_ranges.append((node.start_byte, node.end_byte))
+            return
+        if (ext == ".py" and node.type == "string"
+                and node.parent is not None and node.parent.type in ("module", "block")):
+            remove_ranges.append((node.start_byte, node.end_byte))
+            return
+        for child in node.children:
+            visit(child)
+
+    visit(tree.root_node)
+    remove_ranges.sort()
+
+    kept = bytearray()
+    cursor = 0
+    for start, end in remove_ranges:
+        kept += parse_bytes[cursor:start]
+        cursor = end
+    kept += parse_bytes[cursor:]
+
+    result = kept.decode("utf-8", errors="replace")
+    if ext == ".php":
+        result = result[len("<?php\n"):]
+
+    # Only keep lines that still have content after comment removal, same as
+    # the original function's behavior.
+    clean_lines = [line.rstrip() for line in result.splitlines() if line.strip()]
     return "\n".join(clean_lines)
 
 def tokenize(text): #this tokenizer will split words based on the aplabetical content, 
@@ -163,68 +193,80 @@ def tokenize(text): #this tokenizer will split words based on the aplabetical co
     return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text.lower())
 
 
-def find_documentation_header(lines, start_line):
+def find_documentation_header(lines, start_line, file_extension=None):
     """
-    Search upward from start_line to find docstring/documentation blocks.
-    Handles Python docstrings (''' or \"\"\"), C-style block comments (/* */),
-    and single-line comments (#, //).
-    Returns the adjusted start_line that includes the docstring header.
-    
+    Given the full file's lines and the 1-indexed line where a function's
+    signature begins, returns the adjusted start_line extended upward to
+    include any preceding comment block (Javadoc, KDoc, JSDoc, a run of
+    single-line comments, etc.), tolerating up to 5 blank lines between the
+    comment and the function (or between consecutive comment blocks).
+
+    Uses a tree-sitter parse of the whole file and walks to the function
+    node's *previous sibling* at the same nesting level, instead of
+    guessing from line prefixes -- a tree's children are stored in source
+    order, so the previous sibling is exactly "whatever sits directly above
+    this node." This means a real comment node is never confused with a
+    C preprocessor directive (`preproc_include`, `preproc_ifdef`, ...) or a
+    Swift macro call (`macro_expansion`), which the old '#'/'//' prefix
+    check could not distinguish from an actual comment.
+
     Parameters:
-        lines : list        -> List of file lines (0-indexed)
-        start_line : int    -> Current start line of the function (1-indexed)
-    
+        lines : list                  -> List of the full file's lines
+        start_line : int              -> Current start line of the function (1-indexed)
+        file_extension : str or None  -> e.g. ".py", used to pick the tree-sitter grammar
+
     Returns:
-        int : The line number where the docstring/documentation begins (1-indexed)
+        int : The line number where the documentation begins (1-indexed)
     """
-    i = start_line - 2  # Start from line before function definition (0-indexed)
-    doc_start = start_line  # Default to original start if no doc found
-    in_block_comment = False
-    block_delimiter = None
-    
-    # Search upward for documentation
-    while i >= 0:
-        line = lines[i].strip()
-        
-        # Check for Python docstrings (triple quotes)
-        if '"""' in line or "'''" in line:
-            quote = '"""' if '"""' in line else "'''"
-            doc_start = i + 1  # Mark this as start of doc (1-indexed)
-            
-            # Count quotes to see if it's opening or closing
-            count = line.count(quote)
-            if count == 1:
-                # Single occurrence means we're inside a docstring, keep searching up
-                in_block_comment = True
-                block_delimiter = quote
-            elif count >= 2:
-                # Double occurrence means docstring is complete on this line, we're done
-                return doc_start
-        
-        # Check for C-style block comments (/* */)
-        elif '/*' in line:
-            doc_start = i + 1  # Mark this as start of doc (1-indexed)
-            return doc_start
-        elif '*/' in line and in_block_comment and block_delimiter == '/*':
-            # Continue searching, we found the end of block comment
-            pass
-        
-        # Check for single-line comments (# or //)
-        elif line.startswith(('#', '//')) and not in_block_comment:
-            doc_start = i + 1  # Mark this as start of doc (1-indexed)
-            # Continue searching to find all consecutive comment lines
-        
-        # Stop if we hit a blank line or non-comment line (but continue if in block)
-        elif line == '' and not in_block_comment:
-            i -= 1
-            continue
-        elif not (line.startswith(('#', '//', '*')) or in_block_comment):
-            # Hit a non-comment line, stop searching
+    ext = file_extension.lower() if file_extension else ""
+    parser = _get_ts_parser(ext)
+    if parser is None:
+        return start_line
+
+    MAX_BLANK_LINES = 5
+    php_offset = 1 if ext == ".php" else 0
+
+    full_text = "\n".join(lines)
+    parse_text = "<?php\n" + full_text if ext == ".php" else full_text
+    tree = parser.parse(parse_text.encode("utf-8"))
+
+    target_row = (start_line - 1) + php_offset
+
+    def find_node_at_row(node, row):
+        for child in node.children:
+            if child.start_point[0] > row or child.end_point[0] < row:
+                continue
+            # A node whose span ends exactly at column 0 of `row` (its
+            # trailing newline pushed the end point there) doesn't actually
+            # contain any content on `row` -- e.g. a preproc_include node
+            # ending at (next_row, 0) would otherwise be mistaken for
+            # covering the following line, which starts at that same row.
+            if child.end_point[0] == row and child.end_point[1] == 0:
+                continue
+            deeper = find_node_at_row(child, row)
+            return deeper if deeper is not None else child
+        return None
+
+    node = find_node_at_row(tree.root_node, target_row)
+    if node is None:
+        return start_line
+
+    # Rise to the statement-level node -- the outermost ancestor that still
+    # starts on the same row -- so siblings are compared at the right
+    # nesting level (e.g. inside a class body, not some inner token).
+    while node.parent is not None and node.parent.start_point[0] == node.start_point[0]:
+        node = node.parent
+
+    adj_row = node.start_point[0]
+    prev = node.prev_sibling
+    while prev is not None and "comment" in prev.type:
+        gap = adj_row - prev.end_point[0] - 1
+        if gap > MAX_BLANK_LINES:
             break
-        
-        i -= 1
-    
-    return doc_start
+        adj_row = prev.start_point[0]
+        prev = prev.prev_sibling
+
+    return adj_row - php_offset + 1
 
 # --- Tree-sitter based extraction (replaces the old regex-based approach)
 # pip install tree-sitter tree-sitter-language-pack
@@ -466,7 +508,7 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
                     
                     f_end = f_start + func["length"] - 1
                     
-                    adj_start = find_documentation_header(lines, f_start)
+                    adj_start = find_documentation_header(lines, f_start, file_extension)
                     doc_list, _ = extract_documentation(lines, adj_start, f_end, file_extension)
                     future_doc_text = " ".join(doc_list)
                     
@@ -764,7 +806,7 @@ class AiDevMiner:
                                 if '-' in start_end:
                                     try:
                                         start_line, end_line = map(int, start_end.split('-'))
-                                        start_line = find_documentation_header(lines, start_line)
+                                        start_line = find_documentation_header(lines, start_line, file_extension)
                                     except ValueError:
                                         continue
                                 else:
@@ -793,8 +835,8 @@ class AiDevMiner:
                         if not function_line_range.issubset(changed_lines):
                             continue
 
-                        
-                        start_line = find_documentation_header(lines, start_line)
+
+                        start_line = find_documentation_header(lines, start_line, file_extension)
 
                         doc_list, doc_lines = extract_documentation(lines, start_line, end_line, file_extension)
 
@@ -803,7 +845,7 @@ class AiDevMiner:
 
                         raw_code = "\n".join(lines[start_line-1:end_line])
                         code_text = textwrap.dedent(raw_code)
-                        code_text_no_documentation = strip_comments(code_text)
+                        code_text_no_documentation = strip_comments(code_text, file_extension)
                     
 
                         findings = {}
@@ -901,8 +943,8 @@ if __name__ == "__main__":
     # stats_path = OUTPUT_DIR / "mining_stats_human.json"
     # output_path = OUTPUT_DIR / "dev_final_dataset_subset.csv"
     # stats_path = OUTPUT_DIR / "mining_stats_dev_subset.json"
-    output_path = OUTPUT_DIR / "agent_final_dataset_subset.csv"
-    stats_path = OUTPUT_DIR / "mining_stats_agent_subset.json"
+    output_path = OUTPUT_DIR / "agent_dataset_subset.csv"
+    stats_path = OUTPUT_DIR / "stats_agent_subset.json"
     if stats_path.exists():
         with open(stats_path, 'r') as sj:
             final_stats = Counter(json.load(sj))
