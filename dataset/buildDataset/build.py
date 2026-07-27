@@ -226,60 +226,88 @@ def find_documentation_header(lines, start_line):
     
     return doc_start
 
-PYTHON_EXTENSIONS = {'.py'}
+# --- Tree-sitter based extraction (replaces the old regex-based approach)
+# pip install tree-sitter tree-sitter-language-pack
+from tree_sitter import Parser as _TSParser
+from tree_sitter_language_pack import get_language as _ts_get_language
+
+_TS_LANGUAGE_MAP = {
+    '.py': 'python',
+    '.js': 'javascript', '.jsx': 'javascript',
+    '.java': 'java',
+    '.c': 'c', '.h': 'c',
+    '.cpp': 'cpp', '.cc': 'cpp', '.hpp': 'cpp', '.cxx': 'cpp', '.hxx': 'cpp',
+    '.cs': 'csharp',
+    '.go': 'go',
+    '.kt': 'kotlin', '.kts': 'kotlin',
+    '.php': 'php',
+    '.scala': 'scala',
+    '.swift': 'swift',
+}
+_ts_parser_cache = {}
+
+
+def _get_ts_parser(file_extension):
+    lang_name = _TS_LANGUAGE_MAP.get(file_extension.lower())
+    if lang_name is None:
+        return None
+    if lang_name not in _ts_parser_cache:
+        _ts_parser_cache[lang_name] = _TSParser(_ts_get_language(lang_name))
+    return _ts_parser_cache[lang_name]
 
 
 def extract_documentation(lines, start, end, file_extension):
     """
-    Extracts all documentation (header + internal) from the given range.
-    Uses regex to pull comments out of code lines (inline comments).
+    Extracts documentation (comments + docstrings) from the given line range
+    using a tree-sitter parse tree.
     """
+    raw_block = "\n".join(lines[start - 1:end])
+    ext = file_extension.lower() if file_extension else ""
 
-    # 1. Get the raw block of text for the function range
-    # start and end are 1-indexed from lizard/find_documentation_header
-    raw_block = "\n".join(lines[start-1:end])
+    parser = _get_ts_parser(ext)
+    if parser is None:
+        return [], lines
 
+    # PHP's grammar only recognizes code as PHP inside <?php ... ?> tags;
+    # without the opening tag it's parsed as plain HTML/text.
+    parse_text = "<?php\n" + raw_block if ext == ".php" else raw_block
+
+    # node.start_byte/end_byte are offsets into the UTF-8 encoded buffer, not
+    # character offsets into the Python string -- slicing parse_text directly
+    # silently corrupts/shifts every extracted span once the source contains
+    # any multi-byte character (emoji, accented letters, etc.), which is
+    # common in real-world code. Slice the encoded bytes and decode instead.
+    parse_bytes = parse_text.encode("utf-8")
+    tree = parser.parse(parse_bytes)
     extracted_docs = []
 
-    # 2. Extract Multi-line C-style /* ... */ blocks
-    c_blocks = re.findall(r'/\*.*?\*/', raw_block, flags=re.DOTALL)
-    extracted_docs.extend([b.strip() for b in c_blocks])
+    def visit(node):
+        # Covers "comment", "line_comment", "block_comment", "doc_comment",
+        # etc. across different grammars -- there's no single universal
+        # type name for comments across tree-sitter grammars.
+        if "comment" in node.type:
+            text = parse_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+            extracted_docs.append(text.strip())
+            return
 
-    # 3. Extract Python triple-quoted blocks used as documentation: the
-    # docstring itself, plus any other standalone triple-quoted string used
-    # as an ad-hoc comment (Python has no real block-comment syntax, so this
-    # is a common substitute -- same idea as the /* */ regex above grabbing
-    # C-style blocks anywhere, not just at the top). "Standalone" means the
-    # triple-quote is the first non-whitespace token on its line; this
-    # excludes assignments like `x = """some string"""`, which are ordinary
-    # string literals, not documentation. Restricted to Python files: Java
-    # text blocks and Kotlin raw strings also use \"\"\" for ordinary string
-    # literals, not documentation.
-    py_blocks = []
-    if file_extension and file_extension.lower() in PYTHON_EXTENSIONS:
-        py_blocks = re.findall(
-            r'^[ \t]*("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\')', raw_block, flags=re.MULTILINE
-        )
-        extracted_docs.extend([b.strip() for b in py_blocks])
+        # Standalone triple-quoted/string statement -- Python has no real
+        # block-comment syntax, so this is a common ad-hoc substitute
+        # (docstrings included, wherever they appear in the body, not just
+        # the first statement). A bare string statement's parent is the
+        # enclosing module/block directly; an assignment's string (e.g.
+        # `x = "..."`) is nested one level deeper under `assignment`, so
+        # this naturally excludes ordinary string-literal assignments,
+        # regardless of whether it uses ''' or """.
+        if (ext == ".py" and node.type == "string"
+                and node.parent is not None and node.parent.type in ("module", "block")):
+            text = parse_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+            extracted_docs.append(text.strip())
+            return
 
-    # Remove already-captured blocks so the remaining line-by-line scan for
-    # #/// comments doesn't re-match text that lives inside a docstring or
-    # C-style comment.
-    remaining_block = raw_block
-    for b in c_blocks + py_blocks:
-        remaining_block = remaining_block.replace(b, "", 1)
+        for child in node.children:
+            visit(child)
 
-    # 4. Process remaining lines for # and // (single-line) comments
-    for line in remaining_block.splitlines():
-        line = line.strip()
-
-        # Capture # or // comments (including inline ones)
-        # Look for the symbol and grab everything after it
-        comment_match = re.search(r'(//|#)(.*)$', line)
-        if comment_match:
-            # group(0) includes the // or #
-            extracted_docs.append(comment_match.group(0).strip())
-
+    visit(tree.root_node)
     return extracted_docs, lines
 
 # --- Lizard Parsing ---
