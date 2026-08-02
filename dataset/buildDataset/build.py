@@ -931,8 +931,8 @@ class AiDevMiner:
 if __name__ == "__main__":
     os.environ["PYTHONUTF8"] = "1"
     # df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request.parquet").head(1000)#683
-    df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request_ballanced.parquet")
-    # df = pd.read_parquet(r"G:\663P\dataset\data\human_baseline_2021.parquet").head(1000) # done 1k
+    # df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request_ballanced.parquet")
+    df = pd.read_parquet(r"G:\663P\dataset\data\human_baseline_2021.parquet").head(1000) # done 1k
   
  
     miner = AiDevMiner()
@@ -941,10 +941,10 @@ if __name__ == "__main__":
 
     # output_path = OUTPUT_DIR / "aidev_final_dataset.csv"
     # stats_path = OUTPUT_DIR / "mining_stats_human.json"
-    # output_path = OUTPUT_DIR / "dev_final_dataset_subset.csv"
-    # stats_path = OUTPUT_DIR / "mining_stats_dev_subset.json"
-    output_path = OUTPUT_DIR / "agent_dataset_subset_data.csv"
-    stats_path = OUTPUT_DIR / "stats_agent_subset_data.json"
+    output_path = OUTPUT_DIR / "dev_dataset_subset_data.csv"
+    stats_path = OUTPUT_DIR / "stats_dev_subset_data.json"
+    # output_path = OUTPUT_DIR / "agent_dataset_subset_data.csv"
+    # stats_path = OUTPUT_DIR / "stats_agent_subset_data.json"
     if stats_path.exists():
         with open(stats_path, 'r') as sj:
             final_stats = Counter(json.load(sj))
