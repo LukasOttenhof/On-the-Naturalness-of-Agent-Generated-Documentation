@@ -135,17 +135,7 @@ def doc_code_overlap(doc_text, code_text): # get percent of tokens that overlap 
     return len(overlap) / len(doc_tokens)
 
 def strip_comments(text, file_extension=None):
-    """
-    Returns the source with all comments/docstrings removed, using the same
-    tree-sitter parse (and the same comment/docstring node rules) as
-    extract_documentation, instead of the old regex approach. The old regex
-    version had the same failure modes we found in the pre-fix
-    extract_documentation: a multi-line docstring was never removed (only
-    same-line \"\"\"...\"\"\" was), any line starting with '#' was blindly
-    treated as a comment (wrongly deleting C-style preprocessor directives
-    or Swift '#' macro calls), and a '//' inside a string literal (e.g. a
-    URL) truncated the rest of that line instead of being left alone.
-    """
+
     ext = file_extension.lower() if file_extension else ""
     parser = _get_ts_parser(ext)
     if parser is None:
