@@ -28,7 +28,7 @@ import tqdm
 import numpy as np
 import shutil
 os.environ["PYTHONUTF8"] = "1"
-# --- Configuration ---
+
 REPO_BASE_DIR = Path(__file__).resolve().parent / "cloned_repos"
 OUTPUT_DIR = Path("./dataset/data")
 REPO_BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -74,17 +74,14 @@ def get_time_based_shas(
     merged_at_str: str, 
     window_days: int = 14
 ) -> Dict[str, Optional[str]]:
-    """
-    Finds a commit within a 'soft boundary' window.
-    Example: 1 month out + 14 day window.
-    """
+
     merge_date = datetime.fromisoformat(merged_at_str.replace("Z", "+00:00"))
     results = {}
 
     for months in [1, 3]:
-        # The start of our search (e.g., exactly 1 month later)
+        # The start of our search 
         start_search = merge_date + relativedelta(months=months)
-        # The end of our 'soft boundary' (e.g., 1 month + 14 days)
+        # The end of our 'soft boundary' 
         end_search = start_search + timedelta(days=window_days)
         
         # We use --since AND --until to trap the search in a specific window
@@ -178,36 +175,12 @@ def strip_comments(text, file_extension=None):
     return "\n".join(clean_lines)
 
 def tokenize(text): #this tokenizer will split words based on the aplabetical content, 
-    if not text: # "def tokenize(text): boom1 bang" -> print(tokenize("def tokenize(text): boom1 bang"))
+    if not text:
         return []
     return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text.lower())
 
 
 def find_documentation_header(lines, start_line, file_extension=None):
-    """
-    Given the full file's lines and the 1-indexed line where a function's
-    signature begins, returns the adjusted start_line extended upward to
-    include any preceding comment block (Javadoc, KDoc, JSDoc, a run of
-    single-line comments, etc.), tolerating up to 5 blank lines between the
-    comment and the function (or between consecutive comment blocks).
-
-    Uses a tree-sitter parse of the whole file and walks to the function
-    node's *previous sibling* at the same nesting level, instead of
-    guessing from line prefixes -- a tree's children are stored in source
-    order, so the previous sibling is exactly "whatever sits directly above
-    this node." This means a real comment node is never confused with a
-    C preprocessor directive (`preproc_include`, `preproc_ifdef`, ...) or a
-    Swift macro call (`macro_expansion`), which the old '#'/'//' prefix
-    check could not distinguish from an actual comment.
-
-    Parameters:
-        lines : list                  -> List of the full file's lines
-        start_line : int              -> Current start line of the function (1-indexed)
-        file_extension : str or None  -> e.g. ".py", used to pick the tree-sitter grammar
-
-    Returns:
-        int : The line number where the documentation begins (1-indexed)
-    """
     ext = file_extension.lower() if file_extension else ""
     parser = _get_ts_parser(ext)
     if parser is None:
@@ -226,11 +199,6 @@ def find_documentation_header(lines, start_line, file_extension=None):
         for child in node.children:
             if child.start_point[0] > row or child.end_point[0] < row:
                 continue
-            # A node whose span ends exactly at column 0 of `row` (its
-            # trailing newline pushed the end point there) doesn't actually
-            # contain any content on `row` -- e.g. a preproc_include node
-            # ending at (next_row, 0) would otherwise be mistaken for
-            # covering the following line, which starts at that same row.
             if child.end_point[0] == row and child.end_point[1] == 0:
                 continue
             deeper = find_node_at_row(child, row)
@@ -241,9 +209,6 @@ def find_documentation_header(lines, start_line, file_extension=None):
     if node is None:
         return start_line
 
-    # Rise to the statement-level node -- the outermost ancestor that still
-    # starts on the same row -- so siblings are compared at the right
-    # nesting level (e.g. inside a class body, not some inner token).
     while node.parent is not None and node.parent.start_point[0] == node.start_point[0]:
         node = node.parent
 
@@ -258,8 +223,7 @@ def find_documentation_header(lines, start_line, file_extension=None):
 
     return adj_row - php_offset + 1
 
-# --- Tree-sitter based extraction (replaces the old regex-based approach)
-# pip install tree-sitter tree-sitter-language-pack
+
 from tree_sitter import Parser as _TSParser
 from tree_sitter_language_pack import get_language as _ts_get_language
 
@@ -300,36 +264,21 @@ def extract_documentation(lines, start, end, file_extension):
     if parser is None:
         return [], lines
 
-    # PHP's grammar only recognizes code as PHP inside <?php ... ?> tags;
-    # without the opening tag it's parsed as plain HTML/text.
+
     parse_text = "<?php\n" + raw_block if ext == ".php" else raw_block
 
-    # node.start_byte/end_byte are offsets into the UTF-8 encoded buffer, not
-    # character offsets into the Python string -- slicing parse_text directly
-    # silently corrupts/shifts every extracted span once the source contains
-    # any multi-byte character (emoji, accented letters, etc.), which is
-    # common in real-world code. Slice the encoded bytes and decode instead.
+
     parse_bytes = parse_text.encode("utf-8")
     tree = parser.parse(parse_bytes)
     extracted_docs = []
 
     def visit(node):
-        # Covers "comment", "line_comment", "block_comment", "doc_comment",
-        # etc. across different grammars -- there's no single universal
-        # type name for comments across tree-sitter grammars.
+
         if "comment" in node.type:
             text = parse_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
             extracted_docs.append(text.strip())
             return
 
-        # Standalone triple-quoted/string statement -- Python has no real
-        # block-comment syntax, so this is a common ad-hoc substitute
-        # (docstrings included, wherever they appear in the body, not just
-        # the first statement). A bare string statement's parent is the
-        # enclosing module/block directly; an assignment's string (e.g.
-        # `x = "..."`) is nested one level deeper under `assignment`, so
-        # this naturally excludes ordinary string-literal assignments,
-        # regardless of whether it uses ''' or """.
         if (ext == ".py" and node.type == "string"
                 and node.parent is not None and node.parent.type in ("module", "block")):
             text = parse_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
@@ -415,7 +364,7 @@ def find_file_at_commit(repo, sha, rel_path):
     if rel_path in files:
         return rel_path
 
-    # fallback: match by filename
+
     filename = Path(rel_path).name
 
     matches = [f for f in files if filename == Path(f).name]
@@ -445,7 +394,6 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
             path_at_commit = find_file_at_commit(local_repo, sha, rel_path)
 
             if not path_at_commit:
-                # print("could not find file in new tree")
                 res.append(None)
                 continue
 
@@ -454,7 +402,6 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
             file_res = subprocess.run(cmd_show, capture_output=True, text=True, encoding='utf-8', errors='ignore')
             
             if file_res.returncode != 0: 
-                # print(f"error pulling future commit for {rel_path} using file SHA")
                 print(file_res.stderr.strip())
                 res.append(None)
                 continue
@@ -472,10 +419,9 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
 
                 metrics = parse_detailed_lizard(cp.stdout)
                 
-                # IMPROVED MATCHING: Lizard location can be "name@line-line@path" or "path:line name"
+               
                 func = None
-                for f in metrics.get("functions_info", []): 
-                    # Parse location: can be "path/to/file.py:42 func_name" or "func_name@start-end@path"    
+                for f in metrics.get("functions_info", []):    
                     location = f["location"]
                     if '@' in location and '-' in location:
                         # Handle nested or ranged format: func_name@start-end@path
@@ -487,13 +433,10 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
                                 break
 
                 if func:
-                    # Parse start line safely
                     loc_full = func["location"]
                     if '@' in loc_full:
-                        # format: name@start-end@path
                         f_start = int(loc_full.split('@')[1].split('-')[0])
                     else:
-                        # format: path:line name
                         f_start = int(loc_full.rsplit(' ', 1)[0].split(':')[-1])
                     
                     f_end = f_start + func["length"] - 1
@@ -502,11 +445,11 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
                     doc_list, _ = extract_documentation(lines, adj_start, f_end, file_extension)
                     future_doc_text = " ".join(doc_list)
                     
-                    future_tokens = set(tokenize(future_doc_text))
+                    future_tokens = set(tokenize(future_doc_text)) # tokenize same way we tokenize other text
                     if not future_tokens:
                         res.append((sha, 1.0)) # 100% turnover if docs were deleted
                     else:
-                        overlap = len(pr_tokens.intersection(future_tokens))
+                        overlap = len(pr_tokens.intersection(future_tokens)) # compare the text from old to new
                         turnover = 1.0 - (overlap / len(pr_tokens))
                         res.append((sha, round(turnover, 4)))
                 else:
@@ -562,8 +505,7 @@ class AiDevMiner:
     def fetch_pr_files(self, owner, repo, pr_number):
         """Fetch files and patches changed in the PR using GitHub API."""
         url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/files"
-        #print(url) # https://api.github.com/repos/Draco3310/Gal-Friday2/pulls/41/files
-        files = [] # each file has the follwoing "sha": (i belive this is blob id not commit sha)"filename":  "status":  "additions": "deletions": "changes": "blob_url" "raw_url" "contents_url" "patch":
+        files = []
         page = 1
         while True:
             r = self.session.get(url, params={"page": page, "per_page": 100})
@@ -596,7 +538,6 @@ class AiDevMiner:
         return lines 
 
     def run_quality_check(self, file_path):
-        # Ensure Windows handles the UTF-8 rule files correctly
         os.environ["PYTHONUTF8"] = "1"
         
         extension_map = {
@@ -605,7 +546,6 @@ class AiDevMiner:
             '.java': 'java',
             '.cs': 'csharp',
             '.go': 'golang',
-            # Change 'cpp' to 'c' (Semgrep uses 'c' ruleset for both C and C++)
             '.c': 'c', '.cpp': 'c', '.cc': 'c', '.h': 'c', '.hpp': 'c',
             '.kt': 'kotlin', '.kts': 'kotlin',
             '.php': 'php',
@@ -616,7 +556,7 @@ class AiDevMiner:
         ext = Path(file_path).suffix.lower()
         lang_config = extension_map.get(ext)
         
-        # Safely build configs
+
         configs = ["p/security-audit", "p/default", "p/owasp-top-ten"]
         if lang_config:
             configs.append(f"p/{lang_config}")
@@ -631,12 +571,11 @@ class AiDevMiner:
                 f"--config={config}",
                 "--json",
                 "--quiet",
-                "--no-git-ignore", # Essential for mining arbitrary files
+                "--no-git-ignore", 
                 str(file_path)
             ]
 
             try:
-                # Execute the command
                 res = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -651,7 +590,6 @@ class AiDevMiner:
                     print(f"  {config}: FAILED (Code {res.returncode})")
                     continue
 
-                # Parse the JSON output
                 if res.stdout.strip():
                     data = json.loads(res.stdout)
                     all_findings[config] = data.get("results", [])
@@ -716,7 +654,7 @@ class AiDevMiner:
                 return {"data": [], "stats": stats}
               
             
-            # Use 'head' for the contributor's code, or 'merge_commit_sha' for the final result
+  
             pr_commit_sha = pr_details.get('head', {}).get('sha')
             merge_sha = pr_details.get("merge_commit_sha")
             # print(f"Processing PR {pr_number} in repo {owner}/{repo_name}, commit SHA: {pr_commit_sha}")
@@ -732,7 +670,7 @@ class AiDevMiner:
                     continue # Ignore files using unsupported languages
 
                 
-                # 'git show' can take a blob SHA directly to get the content
+     
                 cmd_base = ["git", "-C", str(local_repo), "show", f"{pr_commit_sha}:{rel_path}"]
                 res_base = subprocess.run(cmd_base, capture_output=True, text=True, encoding='utf-8', errors='ignore')
                     
@@ -781,13 +719,11 @@ class AiDevMiner:
                     lines =baseline_lines
 
                     for func in metrics.get("functions_info", []): 
-                        # Parse location: can be "path/to/file.py:42 func_name" or "func_name@start-end@path"
-                    
+                        
                     
                         location = func["location"]
                             
                         if '@' in location and '-' in location:
-                            # Handle nested or ranged format: func_name@start-end@path
                             parts = location.split('@')
                             if len(parts) >= 3:
                                 func_name = parts[0]
@@ -804,7 +740,6 @@ class AiDevMiner:
                             else:
                                 continue
                         else:
-                            # Handle standard format: "path:line func_name"
                             if ' ' not in location:
                                 continue
                             file_line, func_name = location.rsplit(' ', 1)
@@ -812,7 +747,7 @@ class AiDevMiner:
                                 continue
                             _, line_str = file_line.rsplit(':', 1)
                             try:
-                                start_line = int(line_str) # get function start line
+                                start_line = int(line_str)
                                 end_line = start_line + func["length"] - 1
                                     
                             except ValueError:
@@ -860,7 +795,7 @@ class AiDevMiner:
                         # print("========================================")
                         # break
                  
-                        # Inside process_pr loop:
+              
 
                         
                         if merge_sha is None or merged_at is None:
@@ -946,14 +881,13 @@ if __name__ == "__main__":
         file_needs_header = f.tell() == 0
         
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            # 1. Map futures with their tokens
             future_to_pr = {}
             for i, (_, row) in enumerate(df.iterrows()):
                 token = TOKENS[i % len(TOKENS)]
                 future = executor.submit(miner.process_pr, row, token)
                 future_to_pr[future] = row.get('number', 'Unknown')
 
-            # 2. Wrap with tqdm for a real-time progress bar
+
             for future in tqdm.tqdm(as_completed(future_to_pr), total=len(future_to_pr), desc="Mining PRs"):
                 try:
                     results_list_raw = future.result()
