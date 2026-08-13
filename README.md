@@ -67,7 +67,7 @@ GITHUB_TOKEN_3=ghp_...
 
 ### Reading `dev_agent_combined.csv`
 
-- **One row per function**, any PR-level count has to deduplicate on `(repo, pull_request)` first.
+- **One row per function**.
 - **`label` identifies the agent** - `Claude_Code`, `Copilot`, `Cursor`, `Devin`, `OpenAI_Codex`. It is **null for human-authored rows**; that null is how the human group is selected.
 - Per-function metrics: `loc`, `sloc`, `cyclomatic_complexity`, `num_parameters`, `doc_lines`, `doc_text`, `doc_entropy`, `total_entropy`, `doc_readability`, `doc_code_overlap`, `doc_redundancy`, `semgrep_findings`, `semgrep_findings_count`.
 - PR-level fields repeated on every row: `pr_date_created`, `pr_date_merged`, `pr_date_closed`, `turnover_c5`.
