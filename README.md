@@ -19,6 +19,14 @@ analysis/
 - Mining: `pandas`, `numpy`, `requests`, `python-dotenv`, `python-dateutil`, `tqdm`, `textstat`, `fastparquet`
 - Analysis: `matplotlib`, `seaborn`, `scipy`, `statsmodels`, `pingouin`, `scikit-learn`, `nltk`, `vaderSentiment`, `lexicalrichness`, `textstat`
 
+**External tools**
+
+`build.py` invokes these as subprocesses, so they must be installed before mining:
+
+- `git` - repositories are cloned into `dataset/buildDataset/cloned_repos/` and deleted after each PR is processed. The directory is gitignored but needs free disk space during a run.
+- `semgrep` - static analysis findings. Requires network access, since the rulesets (`p/security-audit`, `p/default`, `p/owasp-top-ten`) are pulled from the Semgrep registry. If semgrep is missing, mining still completes but every row is written with zero findings.
+- `lizard` - cyclomatic complexity and interface metrics. Called as `python -m lizard`, so installing it into the same environment is enough.
+
 **GitHub tokens**
 
 Create a `.env` file in the repository root:
