@@ -1149,8 +1149,8 @@ class AiDevMiner:
 if __name__ == "__main__":
     os.environ["PYTHONUTF8"] = "1"
     # df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request.parquet").head(1000)#683
-    # df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request_ballanced.parquet")
-    df = pd.read_parquet(OUTPUT_DIR / "human_baseline_2021.parquet").head(1000) # done 1k
+    df = pd.read_parquet(OUTPUT_DIR / "all_pull_request_ballanced.parquet") # agent data used
+    # df = pd.read_parquet(OUTPUT_DIR / "human_baseline_2021.parquet").head(1000) # done 1k
   
  
     miner = AiDevMiner()
