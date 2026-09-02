@@ -11,7 +11,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 module purge
-module load StdEnv/2023 python/3.11 git
+module load StdEnv/2023 python/3.11
 
 python -m venv "$REPO_ROOT/venv"
 source "$REPO_ROOT/venv/bin/activate"
