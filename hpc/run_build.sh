@@ -16,7 +16,7 @@ cd "$REPO_ROOT"
 mkdir -p logs
 
 module purge
-module load StdEnv/2023 python/3.11 git/2.42.0
+module load StdEnv/2023 python/3.11 git
 
 source "$REPO_ROOT/venv/bin/activate"
 
