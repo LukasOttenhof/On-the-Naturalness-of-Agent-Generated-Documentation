@@ -29,7 +29,9 @@ import numpy as np
 import shutil
 os.environ["PYTHONUTF8"] = "1"
 
-REPO_BASE_DIR = Path(__file__).resolve().parent / "cloned_repos"
+
+REPO_BASE_DIR = Path(os.environ.get(
+    "REPO_BASE_DIR", Path(__file__).resolve().parent / "cloned_repos"))
 OUTPUT_DIR = Path("./dataset/data")
 REPO_BASE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -61,6 +63,75 @@ MAX_WORKERS = len(TOKENS)
 
 print("GitHub token loaded successfully.")
 # --- Utility Functions ---
+def _resolve_semgrep():
+    """
+    Locate the semgrep executable.
+
+    Falls back to the interpreter's Scripts/bin directory, then to
+    `python -m semgrep`, because a bare "semgrep" only works when the active
+    venv's Scripts directory is on PATH - which silently zeroed every
+    semgrep_findings_count when the venv was not activated.
+    """
+    def _use(path):
+        # semgrep.exe is a launcher that shells out to its sibling `pysemgrep`,
+        # so its Scripts directory has to be on PATH or it exits 127.
+        folder = str(Path(path).parent)
+        if folder not in os.environ.get("PATH", "").split(os.pathsep):
+            os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
+        return [str(path)]
+
+    found = shutil.which("semgrep")
+    if found:
+        return _use(found)
+
+    scripts = Path(sys.executable).parent
+    for candidate in (scripts / "semgrep.exe", scripts / "semgrep",
+                      scripts / "Scripts" / "semgrep.exe"):
+        if candidate.exists():
+            return _use(candidate)
+
+    # user-site install (pip install --user) - the usual Windows layout
+    try:
+        import site
+        roots = [site.getuserbase(), str(Path(site.getusersitepackages()).parent)]
+        for base in filter(None, roots):
+            for candidate in (Path(base) / "Scripts" / "semgrep.exe",
+                              Path(base) / "Scripts" / "semgrep",
+                              Path(base) / "bin" / "semgrep"):
+                if candidate.exists():
+                    return _use(candidate)
+    except Exception:
+        pass
+
+    return [sys.executable, "-m", "semgrep"]
+
+
+SEMGREP_CMD = _resolve_semgrep()
+
+
+def remove_repo_tree(path):
+    """
+    Delete a cloned repo, clearing the read-only bits git leaves on Windows.
+
+    A silent failure here is dangerous: the stale checkout would be reused by the
+    next repo that hashes to the same directory.
+    """
+    import stat
+
+    def _clear_readonly(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except Exception:
+            pass
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=lambda f, t, e: _clear_readonly(f, t, e))
+    else:
+        shutil.rmtree(path, onerror=_clear_readonly)
+    return not os.path.exists(path)
+
+
 def get_git_output(repo: Path, args: List[str]) -> List[str]:
     cmd = ["git", "-C", str(repo)] + args
     try:
@@ -212,9 +283,22 @@ def find_documentation_header(lines, start_line, file_extension=None):
     while node.parent is not None and node.parent.start_point[0] == node.start_point[0]:
         node = node.parent
 
+    def _is_own_line_comment(cnode):
+        """
+        True only if the comment is the first thing on its line.
+
+        A trailing comment - `define(...); // 1 hour` - is its own sibling node in
+        the parse tree, so walking back over it would drag the preceding statement
+        into the "documentation" block along with it.
+        """
+        row = cnode.start_point[0] - php_offset
+        if row < 0 or row >= len(lines):
+            return False
+        return not lines[row][:cnode.start_point[1]].strip()
+
     adj_row = node.start_point[0]
     prev = node.prev_sibling
-    while prev is not None and "comment" in prev.type:
+    while prev is not None and "comment" in prev.type and _is_own_line_comment(prev):
         gap = adj_row - prev.end_point[0] - 1
         if gap > MAX_BLANK_LINES:
             break
@@ -231,7 +315,8 @@ _TS_LANGUAGE_MAP = {
     '.py': 'python',
     '.js': 'javascript', '.jsx': 'javascript',
     '.java': 'java',
-    '.c': 'c', '.h': 'c',
+
+    '.c': 'c', '.h': 'cpp',
     '.cpp': 'cpp', '.cc': 'cpp', '.hpp': 'cpp', '.cxx': 'cpp', '.hxx': 'cpp',
     '.cs': 'csharp',
     '.go': 'go',
@@ -252,28 +337,253 @@ def _get_ts_parser(file_extension):
     return _ts_parser_cache[lang_name]
 
 
-def extract_documentation(lines, start, end, file_extension):
-    """
-    Extracts documentation (comments + docstrings) from the given line range
-    using a tree-sitter parse tree.
-    """
-    raw_block = "\n".join(lines[start - 1:end])
-    ext = file_extension.lower() if file_extension else ""
+_TS_FUNC_NODES = {
+    'python':     {'function_definition'},
+    'javascript': {'function_declaration', 'function_expression', 'arrow_function',
+                   'method_definition', 'generator_function_declaration'},
+    'go':         {'function_declaration', 'method_declaration', 'func_literal'},
+    'java':       {'method_declaration', 'constructor_declaration'},
+    'c':          {'function_definition'},
+    'cpp':        {'function_definition'},
+    'csharp':     {'method_declaration', 'constructor_declaration', 'local_function_statement'},
+    'kotlin':     {'function_declaration'},
+    'php':        {'function_definition', 'method_declaration', 'anonymous_function'},
+    'scala':      {'function_definition'},
+    'swift':      {'function_declaration', 'init_declaration'},
+}
 
+
+INCLUDE_ANONYMOUS_FUNCTIONS = True
+
+_ANON_NODE_TYPES = {'arrow_function', 'function_expression', 'func_literal', 'anonymous_function'}
+
+_TS_STRING_NODES = ('interpreted_string_literal', 'raw_string_literal', 'string',
+                    'string_literal', 'template_string')
+
+_TS_QUOTES = "'\"`"
+
+
+def _ts_node_text(node, src_bytes):
+    return src_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+
+def _ts_declarator_name(node, src_bytes):
+    """
+    C/C++ put the name under nested `declarator` fields:
+    function_definition -> function_declarator -> identifier.
+    """
+    cur = node.child_by_field_name("declarator")
+    for _ in range(6):
+        if cur is None:
+            return None
+        if cur.type in ("identifier", "field_identifier", "qualified_identifier",
+                        "operator_name", "destructor_name", "type_identifier"):
+            return _ts_node_text(cur, src_bytes)
+        cur = cur.child_by_field_name("declarator")
+    return None
+
+
+def _ts_leading_identifier(node, src_bytes):
+    """
+    Kotlin (and friends) expose the name as an unnamed leading child rather than
+    a `name` field. Scan children up to the parameter list / body so a parameter
+    is never mistaken for the function name.
+    """
+    for i in range(node.child_count):
+        field = node.field_name_for_child(i)
+        child = node.child(i)
+        if field in ("parameters", "parameter", "body", "return_type", "type"):
+            break
+        if "parameter" in child.type or child.type in (
+                "function_body", "statement_block", "compound_statement", "block"):
+            break
+        if child.type in ("simple_identifier", "identifier", "type_identifier", "field_identifier"):
+            return _ts_node_text(child, src_bytes)
+    return None
+
+
+def _has_error_ancestor(node):
+    """True if the node sits inside a subtree the grammar failed to parse."""
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "ERROR":
+            return True
+        parent = parent.parent
+    return False
+
+
+def _ts_function_name(node, src_bytes):
+    """
+    Best-effort name for a function node.
+
+    Falls back through the enclosing syntax so that idioms lizard reports as
+    unnamed still get a usable label: const foo = () => {}, { foo: fn },
+    foo = function () {}, and table-driven tests such as
+    t.Run("InvalidURL", func(t *testing.T) {...}).
+    """
+    named = node.child_by_field_name("name")
+    if named is not None:
+        return _ts_node_text(named, src_bytes)
+
+    if node.type not in _ANON_NODE_TYPES:
+        declared = _ts_declarator_name(node, src_bytes)
+        if declared:
+            return declared
+        leading = _ts_leading_identifier(node, src_bytes)
+        if leading:
+            return leading
+
+    parent = node.parent
+    if parent is None:
+        return "(anonymous)"
+
+    if parent.type in ("variable_declarator", "short_var_declaration", "property_declaration"):
+        nm = parent.child_by_field_name("name") or parent.child_by_field_name("left")
+        if nm is not None:
+            return _ts_node_text(nm, src_bytes)
+
+    if parent.type in ("pair", "keyed_element"):
+        key = parent.child_by_field_name("key")
+        if key is not None:
+            return _ts_node_text(key, src_bytes).strip(_TS_QUOTES)
+
+    if parent.type in ("assignment_expression", "assignment"):
+        left = parent.child_by_field_name("left")
+        if left is not None:
+            return _ts_node_text(left, src_bytes)
+
+    # t.Run("InvalidURL", func(t *testing.T) {...}) / describe("x", () => {...})
+    if parent.type in ("argument_list", "arguments"):
+        call = parent.parent
+        if call is not None:
+            callee = call.child_by_field_name("function")
+            label = _ts_node_text(callee, src_bytes) if callee is not None else ""
+            for child in parent.children:
+                if child.type in _TS_STRING_NODES:
+                    arg = _ts_node_text(child, src_bytes).strip(_TS_QUOTES)
+                    if arg:
+                        return "{}[{}]".format(label, arg) if label else arg
+            if label:
+                return label
+
+    return "(anonymous)"
+
+
+def find_functions(source_text, file_extension):
+    """
+    Identify every function in source_text with tree-sitter.
+
+    Returns a list of dicts, sorted by position:
+        {name, text, start_byte, end_byte, start_line, end_line, node_type,
+         anonymous, has_error}
+
+    text is sliced from the node's *byte* range, not its line range. That
+    distinction matters: a callback such as .then(function () { ... }) starts
+    mid-line, so slicing by line would capture ".then(function () {" and lose the
+    real boundary. Line numbers are 1-based and inclusive, for the callers that
+    still need them (changed-line filtering, semgrep attribution).
+    """
+    ext = file_extension.lower() if file_extension else ""
+    lang_name = _TS_LANGUAGE_MAP.get(ext)
+    parser = _get_ts_parser(ext)
+    if parser is None or lang_name is None:
+        return []
+
+    wanted = _TS_FUNC_NODES.get(lang_name)
+    if not wanted:
+        return []
+
+    php_offset = 1 if ext == ".php" else 0
+    parse_text = "<?php\n" + source_text if ext == ".php" else source_text
+    src_bytes = parse_text.encode("utf-8")
+    tree = parser.parse(src_bytes)
+
+    results = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in wanted and not _has_error_ancestor(node):
+
+            anonymous = (node.type in _ANON_NODE_TYPES
+                         and node.child_by_field_name("name") is None)
+            if INCLUDE_ANONYMOUS_FUNCTIONS or not anonymous:
+                results.append({
+                    "name": _ts_function_name(node, src_bytes),
+                    "text": _ts_node_text(node, src_bytes),
+                    "start_byte": node.start_byte,
+                    "end_byte": node.end_byte,
+                    "start_line": node.start_point[0] + 1 - php_offset,
+                    "end_line": node.end_point[0] + 1 - php_offset,
+                    "node_type": node.type,
+                    "anonymous": anonymous,
+                    "has_error": node.has_error,
+                })
+        stack.extend(node.children)
+
+    results.sort(key=lambda f: (f["start_line"], f["start_byte"]))
+    return results
+
+
+def _lizard_span(func_info):
+    """(start_line, end_line) for one lizard functions_info entry, or None."""
+    location = func_info.get("location", "")
+    try:
+        if '@' in location:
+            parts = location.split('@')
+            if len(parts) >= 3 and '-' in parts[1]:
+                s, e = map(int, parts[1].split('-'))
+                return s, e
+        if ' ' in location:
+            file_line, _ = location.rsplit(' ', 1)
+            if ':' in file_line:
+                s = int(file_line.rsplit(':', 1)[1])
+                return s, s + func_info.get("length", 1) - 1
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
+def match_lizard_metrics(lizard_functions, start_line, end_line):
+    """
+    Pair a tree-sitter function with lizard's metrics for the same region.
+
+    Tree-sitter owns the boundaries; lizard is kept only for cyclomatic
+    complexity, nloc and parameter counts, so those stay comparable with prior
+    work. Matching is by largest line overlap, which tolerates the small boundary
+    disagreements that motivated the switch. Returns None when lizard saw nothing
+    in that region.
+    """
+    best, best_overlap = None, 0
+    for f in lizard_functions:
+        span = _lizard_span(f)
+        if span is None:
+            continue
+        fs, fe = span
+        overlap = min(end_line, fe) - max(start_line, fs) + 1
+        if overlap > best_overlap:
+            best, best_overlap = f, overlap
+    return best
+
+
+def extract_documentation_text(block_text, file_extension):
+    """
+    Extract comments/docstrings from an already-sliced block of source.
+
+    Line-range variant of this lives in extract_documentation, which now
+    delegates here. Taking text directly lets callers pass a byte-accurate
+    function body rather than a line window.
+    """
+    ext = file_extension.lower() if file_extension else ""
     parser = _get_ts_parser(ext)
     if parser is None:
-        return [], lines
+        return []
 
-
-    parse_text = "<?php\n" + raw_block if ext == ".php" else raw_block
-
-
+    parse_text = "<?php\n" + block_text if ext == ".php" else block_text
     parse_bytes = parse_text.encode("utf-8")
     tree = parser.parse(parse_bytes)
     extracted_docs = []
 
     def visit(node):
-
         if "comment" in node.type:
             text = parse_bytes[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
             extracted_docs.append(text.strip())
@@ -289,7 +599,19 @@ def extract_documentation(lines, start, end, file_extension):
             visit(child)
 
     visit(tree.root_node)
-    return extracted_docs, lines
+    return extracted_docs
+
+
+
+def extract_documentation(lines, start, end, file_extension):
+    """
+    Extracts documentation (comments + docstrings) from the given line range
+    using a tree-sitter parse tree.
+
+    Thin line-range wrapper around extract_documentation_text.
+    """
+    raw_block = "\n".join(lines[start - 1:end])
+    return extract_documentation_text(raw_block, file_extension), lines
 
 # --- Lizard Parsing ---
 _FUNCTION_PATTERN = re.compile(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)")
@@ -409,42 +731,31 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
             content = file_res.stdout
             lines = content.splitlines()
 
-            with tempfile.NamedTemporaryFile(suffix=Path(rel_path).suffix.lower(), delete=False, mode='w', encoding='utf-8') as tf:
-                tf.write(content)
-                tmp_path = tf.name
+            try:
+                # Locate the function in this later revision with tree-sitter.
+                # Exact name first, then a substring match - but never on an empty
+                # name: the previous `"" in e_name` test was always true and
+                # silently matched the first function in the file.
+                candidates = find_functions(content, file_extension)
 
-            try:     
-                cp = subprocess.run([sys.executable, "-m", "lizard", str(tmp_path)], capture_output=True, text=True, timeout=60)
-    
+                match = None
+                for cand in candidates:
+                    if func_name and cand["name"] == func_name:
+                        match = cand
+                        break
 
-                metrics = parse_detailed_lizard(cp.stdout)
-                
-               
-                func = None
-                for f in metrics.get("functions_info", []):    
-                    location = f["location"]
-                    if '@' in location and '-' in location:
-                        # Handle nested or ranged format: func_name@start-end@path
-                        parts = location.split('@')
-                        if len(parts) >= 3:
-                            e_name = parts[0]
-                            if func_name in e_name or e_name in func_name:
-                                func = f
-                                break
+                if match is None and func_name:
+                    for cand in candidates:
+                        if cand["name"] and (func_name in cand["name"] or cand["name"] in func_name):
+                            match = cand
+                            break
 
-                if func:
-                    loc_full = func["location"]
-                    if '@' in loc_full:
-                        f_start = int(loc_full.split('@')[1].split('-')[0])
-                    else:
-                        f_start = int(loc_full.rsplit(' ', 1)[0].split(':')[-1])
-                    
-                    f_end = f_start + func["length"] - 1
-                    
-                    adj_start = find_documentation_header(lines, f_start, file_extension)
-                    doc_list, _ = extract_documentation(lines, adj_start, f_end, file_extension)
-                    future_doc_text = " ".join(doc_list)
-                    
+                if match:
+                    adj_start = find_documentation_header(lines, match["start_line"], file_extension)
+                    doc_prefix = "\n".join(lines[adj_start - 1:match["start_line"] - 1])
+                    block = (doc_prefix + "\n" + match["text"]) if doc_prefix.strip() else match["text"]
+                    future_doc_text = " ".join(extract_documentation_text(block, file_extension))
+
                     future_tokens = set(tokenize(future_doc_text)) # tokenize same way we tokenize other text
                     if not future_tokens:
                         res.append((sha, 1.0)) # 100% turnover if docs were deleted
@@ -453,16 +764,11 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
                         turnover = 1.0 - (overlap / len(pr_tokens))
                         res.append((sha, round(turnover, 4)))
                 else:
-                    res.append(None) # file existed but function was removec
-                    # res.append((sha, 1.0)) # file existed but function was removec
+                    res.append(None) # file existed but function was removed
 
             except Exception as e:
-                print(f"Lizard processing error: {e}")
+                print(f"Turnover parsing error: {e}")
                 res.append(None)
-            finally:
-                # Cleanup without printing "failed"
-                if os.path.exists(tmp_path): 
-                    os.remove(tmp_path)
                     
         except Exception as e:
             res.append(None)
@@ -489,8 +795,13 @@ class AiDevMiner:
         return api_url.replace("api.github.com/repos", "github.com").replace("api.github.com", "github.com")
 
     def get_repo(self, repo_url):
-        repo_name = repo_url.split("/")[-1].replace(".git", "")
-        local_path = REPO_BASE_DIR / repo_name
+        # Qualify by owner: repo names are not unique (11 different owners in the
+        # dev list have a repo called "awesome-kubernetes"). Keying on the bare
+        # name let one owner's checkout be mined and labelled as another's.
+        parts = repo_url.replace(".git", "").rstrip("/").split("/")
+        owner, repo_name = (parts[-2], parts[-1]) if len(parts) >= 2 else ("_", parts[-1])
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{owner}__{repo_name}")
+        local_path = REPO_BASE_DIR / safe
         if not local_path.exists():
             try:
                 repo = subprocess.run(
@@ -567,7 +878,7 @@ class AiDevMiner:
 
         for config in configs:
             cmd = [
-                "semgrep",
+                *SEMGREP_CMD,
                 f"--config={config}",
                 "--json",
                 "--quiet",
@@ -597,8 +908,11 @@ class AiDevMiner:
                     all_findings[config] = []
 
             except FileNotFoundError:
-                print("Semgrep executable not found; please install it.")
-                return {}
+                raise RuntimeError(
+                    "Semgrep executable not found (tried: {}). Install it or add its "
+                    "Scripts directory to PATH - continuing would silently record "
+                    "semgrep_findings_count=0 for every row.".format(" ".join(SEMGREP_CMD))
+                )
             except subprocess.TimeoutExpired:
                 print(f"Semgrep timed out on {file_path} with config {config}")
                 continue
@@ -718,59 +1032,36 @@ class AiDevMiner:
 
                     lines =baseline_lines
 
-                    for func in metrics.get("functions_info", []): 
-                        
-                    
-                        location = func["location"]
-                            
-                        if '@' in location and '-' in location:
-                            parts = location.split('@')
-                            if len(parts) >= 3:
-                                func_name = parts[0]
-                                start_end = parts[1]
-                                path = '@'.join(parts[2:])
-                                if '-' in start_end:
-                                    try:
-                                        start_line, end_line = map(int, start_end.split('-'))
-                                        start_line = find_documentation_header(lines, start_line, file_extension)
-                                    except ValueError:
-                                        continue
-                                else:
-                                    continue
-                            else:
-                                continue
-                        else:
-                            if ' ' not in location:
-                                continue
-                            file_line, func_name = location.rsplit(' ', 1)
-                            if ':' not in file_line:
-                                continue
-                            _, line_str = file_line.rsplit(':', 1)
-                            try:
-                                start_line = int(line_str)
-                                end_line = start_line + func["length"] - 1
-                                    
-                            except ValueError:
-                                continue
-                        
-                        # if not set(range(start_line, end_line + 1)).intersection(changed_lines): # filter out unchanged functions
-                            #continue
+                    lizard_functions = metrics.get("functions_info", [])
+
+                    # Tree-sitter owns function boundaries; lizard is kept only for
+                    # cyclomatic complexity / nloc / parameter counts.
+                    for ts_func in find_functions(baseline_content, file_extension):
+                        func_name = ts_func["name"]
+                        body_start_line = ts_func["start_line"]
+                        end_line = ts_func["end_line"]
+
+                        # Walk back over any doc block sitting above the declaration.
+                        start_line = find_documentation_header(lines, body_start_line, file_extension)
+
                         function_line_range = set(range(start_line, end_line + 1))
                         # Check if every single line in the function is present in the PR's changed lines
                         if not function_line_range.issubset(changed_lines):
                             continue
 
+                        # Body comes from the node's byte range so a callback starting
+                        # mid-line (".then(function () {") is captured from the correct
+                        # offset; any doc block above it is prepended by line.
+                        doc_prefix = "\n".join(lines[start_line - 1:body_start_line - 1])
+                        code_text = textwrap.dedent(
+                            (doc_prefix + "\n" + ts_func["text"]) if doc_prefix.strip() else ts_func["text"]
+                        )
 
-                        start_line = find_documentation_header(lines, start_line, file_extension)
-
-                        doc_list, doc_lines = extract_documentation(lines, start_line, end_line, file_extension)
-
-
+                        doc_list = extract_documentation_text(code_text, file_extension)
                         doc_text = " ".join(doc_list)
-
-                        raw_code = "\n".join(lines[start_line-1:end_line])
-                        code_text = textwrap.dedent(raw_code)
                         code_text_no_documentation = strip_comments(code_text, file_extension)
+
+                        func = match_lizard_metrics(lizard_functions, body_start_line, end_line)
                     
 
                         findings = {}
@@ -815,10 +1106,10 @@ class AiDevMiner:
                                 "function_end_line": end_line,
                             #   "function_length": func["length"],
                                 "function": code_text,
-                                "loc": func["length"],
-                                "sloc": func["nloc"],
-                                "cyclomatic_complexity": func["ccn"],
-                                "num_parameters": func["params"],
+                                "loc": end_line - body_start_line + 1,
+                                "sloc": func["nloc"] if func else np.nan,
+                                "cyclomatic_complexity": func["ccn"] if func else np.nan,
+                                "num_parameters": func["params"] if func else np.nan,
                                 "doc_lines": len(doc_list),
                                 "doc_text": doc_text,
                                 "doc_entropy": round(calculate_entropy(doc_text), 4) if doc_text else np.nan,
@@ -845,11 +1136,13 @@ class AiDevMiner:
         except Exception as e:
             print(f"Skipping PR {row.get('number')}: {e}")
         #print(f"Finished processing PR {row.get('number')}, {total_smells} smells and {total_vulns} vulns found in pr.")
-        try:
-            if local_repo and os.path.exists(local_repo):
-                shutil.rmtree(local_repo)
-        except Exception as e:
-            print(f"Warning: failed to delete repo {local_repo}: {e}")
+        # try:
+        #     if local_repo and os.path.exists(local_repo):
+        #         if not remove_repo_tree(local_repo):
+        #             print(f"WARNING: could not fully delete {local_repo}; a stale "
+        #                   f"checkout may be reused on a later PR")
+        # except Exception as e:
+        #     print(f"Warning: failed to delete repo {local_repo}: {e}")
         return {"data": results, "stats": stats}
 
 # --- Main Execution ---
