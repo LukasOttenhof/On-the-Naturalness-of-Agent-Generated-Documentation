@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=agentdoc-mine
-#SBATCH --account=def-YOURPI          # <-- set this to your allocation
-#SBATCH --time=12:00:00               # <-- adjust to how long a 1000-PR mine takes you
+
+#SBATCH --time=35:00:00    
 #SBATCH --cpus-per-task=3             # matches MAX_WORKERS = number of GITHUB_TOKEN_* set
 #SBATCH --mem=16G
 #SBATCH --output=logs/mine-%j.out
