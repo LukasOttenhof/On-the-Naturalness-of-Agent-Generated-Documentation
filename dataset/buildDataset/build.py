@@ -62,7 +62,7 @@ if not TOKENS:
 MAX_WORKERS = len(TOKENS)
 
 print("GitHub token loaded successfully.")
-# --- Utility Functions ---
+
 def _resolve_semgrep():
     """
     Locate the semgrep executable.
@@ -73,8 +73,6 @@ def _resolve_semgrep():
     semgrep_findings_count when the venv was not activated.
     """
     def _use(path):
-        # semgrep.exe is a launcher that shells out to its sibling `pysemgrep`,
-        # so its Scripts directory has to be on PATH or it exits 127.
         folder = str(Path(path).parent)
         if folder not in os.environ.get("PATH", "").split(os.pathsep):
             os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
@@ -240,8 +238,7 @@ def strip_comments(text, file_extension=None):
     if ext == ".php":
         result = result[len("<?php\n"):]
 
-    # Only keep lines that still have content after comment removal, same as
-    # the original function's behavior.
+
     clean_lines = [line.rstrip() for line in result.splitlines() if line.strip()]
     return "\n".join(clean_lines)
 
@@ -267,12 +264,6 @@ def find_documentation_header(lines, start_line, file_extension=None):
     target_row = (start_line - 1) + php_offset
 
     def find_node_at_row(node, row):
-        # Take the LAST overlapping child, not the first. Siblings are visited
-        # in document order and normally only touch at a boundary (one ends
-        # where the next begins) - e.g. in a template literal, the raw-text
-        # chunk before `${` ends on the same row the following interpolation
-        # starts on. Returning on first-match would grab that leading text
-        # chunk instead of the node actually sitting on the row.
         match = None
         for child in node.children:
             if child.start_point[0] > row or child.end_point[0] < row:
@@ -500,12 +491,6 @@ def find_functions(source_text, file_extension):
     tree = parser.parse(src_bytes)
 
     if tree.root_node.has_error:
-        # A parse error anywhere in the file can make tree-sitter's error
-        # recovery silently reshape node boundaries elsewhere in the tree
-        # (e.g. unsupported Flow/TS syntax swallowing a preceding token into
-        # an otherwise-clean arrow_function's span). _has_error_ancestor only
-        # catches nodes literally inside an ERROR subtree, not this. Safer to
-        # drop the whole file than risk corrupted-but-unflagged spans.
         return []
 
     results = []
@@ -742,10 +727,6 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
             lines = content.splitlines()
 
             try:
-                # Locate the function in this later revision with tree-sitter.
-                # Exact name first, then a substring match - but never on an empty
-                # name: the previous `"" in e_name` test was always true and
-                # silently matched the first function in the file.
                 candidates = find_functions(content, file_extension)
 
                 match = None
@@ -786,7 +767,7 @@ def getTurnover(local_repo: Path, rel_path: str, func_name: str, pr_doc_text: st
 
     return res
 
-# --- Main Miner ---
+# main miner
 class AiDevMiner:
     def __init__(self):
         self.session = requests.Session()
@@ -805,9 +786,6 @@ class AiDevMiner:
         return api_url.replace("api.github.com/repos", "github.com").replace("api.github.com", "github.com")
 
     def get_repo(self, repo_url):
-        # Qualify by owner: repo names are not unique (11 different owners in the
-        # dev list have a repo called "awesome-kubernetes"). Keying on the bare
-        # name let one owner's checkout be mined and labelled as another's.
         parts = repo_url.replace(".git", "").rstrip("/").split("/")
         owner, repo_name = (parts[-2], parts[-1]) if len(parts) >= 2 else ("_", parts[-1])
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{owner}__{repo_name}")
@@ -1059,9 +1037,7 @@ class AiDevMiner:
                         if not function_line_range.issubset(changed_lines):
                             continue
 
-                        # Body comes from the node's byte range so a callback starting
-                        # mid-line (".then(function () {") is captured from the correct
-                        # offset; any doc block above it is prepended by line.
+                   
                         doc_prefix = "\n".join(lines[start_line - 1:body_start_line - 1])
                         code_text = textwrap.dedent(
                             (doc_prefix + "\n" + ts_func["text"]) if doc_prefix.strip() else ts_func["text"]
