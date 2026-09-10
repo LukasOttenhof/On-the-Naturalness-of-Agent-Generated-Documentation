@@ -267,14 +267,23 @@ def find_documentation_header(lines, start_line, file_extension=None):
     target_row = (start_line - 1) + php_offset
 
     def find_node_at_row(node, row):
+        # Take the LAST overlapping child, not the first. Siblings are visited
+        # in document order and normally only touch at a boundary (one ends
+        # where the next begins) - e.g. in a template literal, the raw-text
+        # chunk before `${` ends on the same row the following interpolation
+        # starts on. Returning on first-match would grab that leading text
+        # chunk instead of the node actually sitting on the row.
+        match = None
         for child in node.children:
             if child.start_point[0] > row or child.end_point[0] < row:
                 continue
             if child.end_point[0] == row and child.end_point[1] == 0:
                 continue
-            deeper = find_node_at_row(child, row)
-            return deeper if deeper is not None else child
-        return None
+            match = child
+        if match is None:
+            return None
+        deeper = find_node_at_row(match, row)
+        return deeper if deeper is not None else match
 
     node = find_node_at_row(tree.root_node, target_row)
     if node is None:
@@ -413,14 +422,6 @@ def _has_error_ancestor(node):
 
 
 def _ts_function_name(node, src_bytes):
-    """
-    Best-effort name for a function node.
-
-    Falls back through the enclosing syntax so that idioms lizard reports as
-    unnamed still get a usable label: const foo = () => {}, { foo: fn },
-    foo = function () {}, and table-driven tests such as
-    t.Run("InvalidURL", func(t *testing.T) {...}).
-    """
     named = node.child_by_field_name("name")
     if named is not None:
         return _ts_node_text(named, src_bytes)
@@ -489,7 +490,7 @@ def find_functions(source_text, file_extension):
     if parser is None or lang_name is None:
         return []
 
-    wanted = _TS_FUNC_NODES.get(lang_name)
+    wanted = _TS_FUNC_NODES.get(lang_name) # function nodes
     if not wanted:
         return []
 
@@ -498,11 +499,20 @@ def find_functions(source_text, file_extension):
     src_bytes = parse_text.encode("utf-8")
     tree = parser.parse(src_bytes)
 
+    if tree.root_node.has_error:
+        # A parse error anywhere in the file can make tree-sitter's error
+        # recovery silently reshape node boundaries elsewhere in the tree
+        # (e.g. unsupported Flow/TS syntax swallowing a preceding token into
+        # an otherwise-clean arrow_function's span). _has_error_ancestor only
+        # catches nodes literally inside an ERROR subtree, not this. Safer to
+        # drop the whole file than risk corrupted-but-unflagged spans.
+        return []
+
     results = []
-    stack = [tree.root_node]
+    stack = [tree.root_node] # loop through all nodes
     while stack:
         node = stack.pop()
-        if node.type in wanted and not _has_error_ancestor(node):
+        if node.type in wanted and not _has_error_ancestor(node): # if the node is a fucntion
 
             anonymous = (node.type in _ANON_NODE_TYPES
                          and node.child_by_field_name("name") is None)
@@ -1149,8 +1159,8 @@ class AiDevMiner:
 if __name__ == "__main__":
     os.environ["PYTHONUTF8"] = "1"
     # df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request.parquet").head(1000)#683
-    # df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request_ballanced.parquet")
-    df = pd.read_parquet(r"G:\663P\dataset\data\human_baseline_2021.parquet").head(1000) # done 1k
+    df = pd.read_parquet(r"G:\663P\dataset\data\all_pull_request_ballanced.parquet")
+    # df = pd.read_parquet(r"G:\663P\dataset\data\human_baseline_2021.parquet").head(1000) # done 1k
   
  
     miner = AiDevMiner()
@@ -1159,10 +1169,10 @@ if __name__ == "__main__":
 
     # output_path = OUTPUT_DIR / "aidev_final_dataset.csv"
     # stats_path = OUTPUT_DIR / "mining_stats_human.json"
-    output_path = OUTPUT_DIR / "dev_dataset_subset_data.csv"
-    stats_path = OUTPUT_DIR / "stats_dev_subset_data.json"
-    # output_path = OUTPUT_DIR / "agent_dataset_subset_data.csv"
-    # stats_path = OUTPUT_DIR / "stats_agent_subset_data.json"
+    # output_path = OUTPUT_DIR / "dev_dataset_subset_data.csv"
+    # stats_path = OUTPUT_DIR / "stats_dev_subset_data.json"
+    output_path = OUTPUT_DIR / "agent_dataset_subset_data.csv"
+    stats_path = OUTPUT_DIR / "stats_agent_subset_data.json"
     if stats_path.exists():
         with open(stats_path, 'r') as sj:
             final_stats = Counter(json.load(sj))
