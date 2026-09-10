@@ -16,7 +16,7 @@ analysis/
 
 **Python packages**
 
-- Mining: `pandas`, `numpy`, `requests`, `python-dotenv`, `python-dateutil`, `tqdm`, `textstat`, `fastparquet`
+- Mining: `pandas`, `numpy`, `requests`, `python-dotenv`, `python-dateutil`, `tqdm`, `textstat`, `fastparquet`, `tree_sitter`, `tree_sitter_language_pack`
 - Analysis: `matplotlib`, `seaborn`, `scipy`, `statsmodels`, `pingouin`, `scikit-learn`, `nltk`, `vaderSentiment`, `lexicalrichness`, `textstat`
 
 **External tools**
@@ -43,7 +43,7 @@ GITHUB_TOKEN_3=ghp_...
 
 - **`build.py`** - the primary miner. Takes a Parquet list of PRs, clones each repository at the merge commit, extracts functions and their documentation for the supported languages, and computes entropy, readability, complexity, and static-analysis metrics. 
 - **`fetch_new_agent_prs.ipynb`** - searches GitHub for recently merged PRs authored by AI agents (Claude Code, Copilot, Cursor, Devin, OpenAI Codex), saving the PR list to `new_agent_pr_list.parquet` and the mined output to `agent_supplement_dataset.csv`.
-- **`build_human_pr_list.ipynb`** - builds the human baseline PR pool with the query `is:pr is:merged created:<2021-01-01 stars:>=25`, saved to `human_baseline_2021.parquet`. 
+- **`build_human_pr_list.ipynb`** - builds the human baseline PR pool
 - **`combine.ipynb`** - merges the agent and human mining output, folds in the supplementary agent PRs, re-tokenizes and cleans comments, and writes the final `dev_agent_combined.csv`.
 
 ### Data files - `dataset/data/`
