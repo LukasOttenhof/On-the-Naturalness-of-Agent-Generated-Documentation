@@ -1,3 +1,5 @@
 .env
 cloned_repos
 venv
+__pycache__/
+*.pyc
